@@ -192,7 +192,6 @@
 
       <div class="row section-gap">
         <button class="ghost" id="clearBtn">Clear month</button>
-        <button class="ghost" id="sampleBtn">Load sample data</button>
       </div>
     </section>
 
@@ -661,34 +660,6 @@
     state[monthKey()] = { income: 0, expenses: [] };
     save(); render();
   });
-  $("sampleBtn").addEventListener("click", function () {
-    var k = monthKey();
-    var dim = daysInMonth(k);
-    var d = function (day) { return k + "-" + pad2(Math.min(day, dim)); };
-    state[k] = {
-      income: 75000,
-      expenses: [
-        { cat: "Rent / Mortgage", amt: 22000, date: d(1) },
-        { cat: "Utilities", amt: 3200, date: d(3) },
-        { cat: "Debt payments", amt: 12000, date: d(5) },
-        { cat: "Subscriptions", amt: 1200, date: d(6) },
-        { cat: "Groceries", amt: 3200, date: d(2) },
-        { cat: "Groceries", amt: 4100, date: d(9) },
-        { cat: "Groceries", amt: 2200, date: d(16) },
-        { cat: "Transport", amt: 2400, date: d(4) },
-        { cat: "Transport", amt: 2400, date: d(11) },
-        { cat: "Dining out", amt: 1800, date: d(7) },
-        { cat: "Dining out", amt: 1350, date: d(12) },
-        { cat: "Dining out", amt: 2250, date: d(19) },
-        { cat: "Entertainment", amt: 1500, date: d(10) },
-        { cat: "Entertainment", amt: 2500, date: d(18) },
-        { cat: "Healthcare", amt: 1800, date: d(14) },
-        { cat: "Other", amt: 3000, date: d(20) }
-      ]
-    };
-    save(); render();
-  });
-
   // ---- init ----
   (function init() {
     var el = $("month");
