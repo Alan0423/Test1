@@ -739,6 +739,44 @@
     });
   }
 
+  // Automatic cloud sync: load the shared sheet on startup and upload after changes.
+  var cloudSyncReady = false;
+  var cloudSyncQueue = Promise.resolve();
+  function autoSyncToCloud() {
+    var snapshot = JSON.parse(JSON.stringify(state));
+    cloudSyncQueue = cloudSyncQueue.then(function () {
+      return postCloudState(snapshot);
+    }).then(function () {
+      console.info("Google Sheets sync request sent.");
+    }).catch(function (err) {
+      console.error("Automatic Google Sheets sync failed:", err);
+      // Do not block expense entry if the network or endpoint is unavailable.
+    });
+    return cloudSyncQueue;
+  }
+
+  async function initializeCloudSync() {
+    try {
+      var cloud = await getCloudState();
+      if (!validCloudState(cloud)) throw new Error("Unexpected Google Sheet data format.");
+      if (Object.keys(cloud).length) {
+        // Cloud is the shared copy across browsers; load it before allowing edits.
+        state = cloud;
+        save();
+        var keys = Object.keys(state).sort();
+        if (keys.length) $("month").value = keys[keys.length - 1];
+        $("date").value = defaultDate();
+        render();
+      } else if (Object.keys(state).length) {
+        // First sync: preserve this browser's existing records in the empty sheet.
+        await autoSyncToCloud();
+      }
+      cloudSyncReady = true;
+    } catch (err) {
+      console.warn("Google Sheets is not connected yet; local storage remains active.", err);
+    }
+  }
+
   // ---- events ----
   $("month").addEventListener("change", function () {
     save();
@@ -748,6 +786,7 @@
   $("income").addEventListener("input", function () {
     current().income = parseFloat(this.value) || 0;
     save(); analyze(current());
+    if (cloudSyncReady) autoSyncToCloud();
   });
   $("addBtn").addEventListener("click", function () {
     var amt = parseFloat($("amount").value);
@@ -772,6 +811,7 @@
     $("amount").value = "";
     $("amount").focus();
     save(); render();
+    if (cloudSyncReady) autoSyncToCloud();
   });
   $("amount").addEventListener("keydown", function (e) {
     if (e.key === "Enter") $("addBtn").click();
@@ -780,10 +820,64 @@
     if (!confirm("Clear all data for " + monthKey() + "?")) return;
     state[monthKey()] = { income: 0, expenses: [] };
     save(); render();
+    if (cloudSyncReady) autoSyncToCloud();
   });
   $("downloadCsvBtn").addEventListener("click", function () {
     exportAllDataCsv();
   });
+  // ---- Google Sheets cloud backup ----
+  // After deploying the companion Google Apps Script, paste its Web App URL here.
+  var GOOGLE_SHEETS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwawS03oOMHwJoxQr1J4SX07OP0sGeTlR1ek5v_s0qa9M-Raw6MfQwio8Zy3KlxAqYv/exec";
+
+  function getCloudState() {
+    return new Promise(function (resolve, reject) {
+      if (!/^https:\/\/script\.google\.com\/macros\/s\//.test(GOOGLE_SHEETS_WEB_APP_URL)) {
+        reject(new Error("Set GOOGLE_SHEETS_WEB_APP_URL in the HTML first."));
+        return;
+      }
+      var callbackName = "mmcCloudCallback_" + Date.now() + "_" + Math.floor(Math.random() * 100000);
+      var script = document.createElement("script");
+      var finished = false;
+      var timer = setTimeout(function () { finish(new Error("Google Sheets did not respond. Check the Web App URL and deployment access.")); }, 15000);
+      function finish(err, value) {
+        if (finished) return;
+        finished = true; clearTimeout(timer);
+        try { delete window[callbackName]; } catch (_) { window[callbackName] = undefined; }
+        if (script.parentNode) script.parentNode.removeChild(script);
+        if (err) reject(err); else resolve(value);
+      }
+      window[callbackName] = function (payload) {
+        if (!payload || payload.ok !== true) return finish(new Error(payload && payload.error ? payload.error : "Could not read Google Sheet."));
+        finish(null, payload.state || {});
+      };
+      script.onerror = function () { finish(new Error("Could not connect to Google Sheets. Check the deployed Web App URL.")); };
+      script.src = GOOGLE_SHEETS_WEB_APP_URL + (GOOGLE_SHEETS_WEB_APP_URL.indexOf("?") >= 0 ? "&" : "?") + "action=load&callback=" + encodeURIComponent(callbackName) + "&t=" + Date.now();
+      document.head.appendChild(script);
+    });
+  }
+
+  function postCloudState(snapshot) {
+    if (!/^https:\/\/script\.google\.com\/macros\/s\//.test(GOOGLE_SHEETS_WEB_APP_URL)) {
+      return Promise.reject(new Error("Set GOOGLE_SHEETS_WEB_APP_URL in the HTML first."));
+    }
+    // Apps Script cross-origin POSTs use no-cors; the browser cannot expose the response body.
+    return fetch(GOOGLE_SHEETS_WEB_APP_URL, {
+      method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ state: snapshot })
+    });
+  }
+
+  function validCloudState(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    return Object.keys(value).every(function (key) {
+      return /^\d{4}-\d{2}$/.test(key) && value[key] && typeof value[key] === "object" &&
+        Number.isFinite(Number(value[key].income)) && Array.isArray(value[key].expenses) &&
+        value[key].expenses.every(function (e) { return e && Number.isFinite(Number(e.amt)) && Number(e.amt) >= 0; });
+    });
+  }
+
+
+
   // ---- init ----
   (function init() {
     var el = $("month");
@@ -794,6 +888,7 @@
     }
     $("date").value = defaultDate();
     render();
+    initializeCloudSync();
   })();
 })();
 </script>
