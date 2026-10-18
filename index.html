@@ -119,7 +119,7 @@
     .card, .stat { background: #fff; border-color: #ccc; }
     .card h2, .stat .k, .stat .d, .sub, .footnote, td.date, .report-block h3 { color: #444; }
     input, select { background: #fff; color: #111; border-color: #ccc; }
-    .toolbar, #clearBtn, #sampleBtn, #addBtn, .del { display: none !important; }
+    .toolbar, #clearBtn, #downloadCsvBtn, #sampleBtn, #addBtn, .del { display: none !important; }
     .table-scroll { max-height: none; overflow: visible; border: none; }
     .grid { grid-template-columns: 1fr; }
     .report-grid { grid-template-columns: 1fr 1fr; }
@@ -137,7 +137,7 @@
     <section class="card">
       <h2>1 ·monthly use</h2>
       <div class="row">
-        <div>
+        <div style="display:none">
           <label for="month">Month</label>
           <input type="month" id="month" />
         </div>
@@ -190,8 +190,9 @@
         <div class="empty" id="emptyMsg">No expenses added yet.</div>
       </div>
 
-      <div class="row section-gap">
+      <div class="row section-gap" style="flex-wrap:wrap">
         <button class="ghost" id="clearBtn">Clear month</button>
+        <button id="downloadCsvBtn" type="button">Download CSV</button>
       </div>
     </section>
 
@@ -219,39 +220,6 @@
     </section>
   </div>
 
-  <!-- GENERATED REPORT -->
-  <section class="card section-gap">
-    <h2>3 · Generated report — <span id="repMonth"></span></h2>
-    <p class="empty" style="padding:0 0 14px; margin:0">Built automatically from this month's entries; it updates as you type. Amounts in ₹ (INR).</p>
-
-    <div class="report-grid">
-      <div class="report-block">
-        <h3>Monthly summary</h3>
-        <table class="report-table" id="repSummary"></table>
-      </div>
-      <div class="report-block">
-        <h3>Category breakdown</h3>
-        <table class="report-table" id="repCats"></table>
-      </div>
-    </div>
-
-    <div class="report-block section-gap">
-      <h3>Daily breakdown</h3>
-      <div class="table-scroll"><table class="report-table" id="repDays"></table></div>
-    </div>
-
-    <div class="report-block section-gap">
-      <h3>All expense entries</h3>
-      <div class="table-scroll"><table class="report-table" id="repEntries"></table></div>
-    </div>
-
-    <div class="toolbar">
-      <button id="dlCsvBtn">Download report (.csv)</button>
-      <button class="ghost" id="printBtn">Save as PDF</button>
-      <span class="spacer"></span>
-      <span class="footnote" style="margin:0">The .csv opens in Excel, Google Sheets or Numbers.</span>
-    </div>
-  </section>
 </main>
 
 <script>
@@ -299,11 +267,35 @@
 
   function load() {
     try {
-      return JSON.parse(localStorage.getItem("mmc-state")) || {};
-    } catch (e) { return {}; }
+      var parsed = JSON.parse(localStorage.getItem("mmc-state"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      Object.keys(parsed).forEach(function (key) {
+        if (!/^\\d{4}-\\d{2}$/.test(key) || !parsed[key] || typeof parsed[key] !== "object") {
+          delete parsed[key];
+          return;
+        }
+        parsed[key].income = Number(parsed[key].income) || 0;
+        if (!Array.isArray(parsed[key].expenses)) parsed[key].expenses = [];
+        parsed[key].expenses = parsed[key].expenses.filter(function (e) {
+          return e && typeof e === "object" && Number.isFinite(Number(e.amt)) && Number(e.amt) >= 0;
+        }).map(function (e) {
+          return { date: typeof e.date === "string" ? e.date : "", cat: String(e.cat || "Other"), amt: Number(e.amt) || 0 };
+        });
+      });
+      return parsed;
+    } catch (e) {
+      console.error("Could not load saved data:", e);
+      return {};
+    }
   }
   function save() {
-    localStorage.setItem("mmc-state", JSON.stringify(state));
+    try {
+      localStorage.setItem("mmc-state", JSON.stringify(state));
+      return true;
+    } catch (e) {
+      console.error("Could not save data to browser storage:", e);
+      return false;
+    }
   }
   function current() {
     var k = monthKey();
@@ -460,6 +452,8 @@
   }
 
   function renderReport(r) {
+    // Report section was removed from the UI; keep the rest of the app functional.
+    if (!$("repSummary")) return;
     $("repMonth").textContent = r.key;
 
     // summary
@@ -541,9 +535,7 @@
     var rows = [];
 
     rows.push(["Monthly Money Checkup — report sheet"]);
-    rows.push(["Month", r.key]);
     rows.push(["Currency", "INR (₹)"]);
-    rows.push(["Generated", new Date().toLocaleString()]);
     rows.push([]);
 
     rows.push(["MONTHLY SUMMARY"]);
@@ -600,11 +592,140 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
   }
 
-  $("dlCsvBtn").addEventListener("click", function () {
-    analyze(current());                       // make sure the snapshot is fresh
-    download("money-report-" + monthKey() + ".csv", buildCsv());
+  // Full-history backup and restore, without changing the visible interface.
+  // Ctrl+Shift+E (Cmd+Shift+E on Mac): export all months to CSV.
+  // Ctrl+Shift+I (Cmd+Shift+I on Mac): import a full-history CSV backup.
+  function buildAllDataCsv() {
+    var rows = [
+      ["Monthly Money Checkup — complete data backup"],
+      ["Generated", new Date().toLocaleString()],
+      [],
+      ["MONTHLY INCOME"],
+      ["Month", "Income (INR)"]
+    ];
+    Object.keys(state).sort().forEach(function (key) {
+      var m = state[key] || {};
+      rows.push([key, round2(Number(m.income) || 0)]);
+    });
+    rows.push([], ["ALL EXPENSE ENTRIES"], ["Month", "Date", "Category", "Amount (INR)"]);
+    Object.keys(state).sort().forEach(function (key) {
+      var m = state[key] || {};
+      (Array.isArray(m.expenses) ? m.expenses : []).forEach(function (e) {
+        rows.push([key, e.date || "", e.cat || "Other", round2(Number(e.amt) || 0)]);
+      });
+    });
+    return "\ufeff" + rows.map(function (row) {
+      return row.map(csvCell).join(",");
+    }).join("\r\n");
+  }
+
+  function parseBackupCsv(text) {
+    text = String(text || "").replace(/^\uFEFF/, "");
+    var rows = [], row = [], value = "", quoted = false;
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      if (ch === '"') {
+        if (quoted && text[i + 1] === '"') { value += '"'; i++; }
+        else quoted = !quoted;
+      } else if (ch === "," && !quoted) {
+        row.push(value); value = "";
+      } else if ((ch === "\n" || ch === "\r") && !quoted) {
+        if (ch === "\r" && text[i + 1] === "\n") i++;
+        row.push(value);
+        if (row.some(function (v) { return v !== ""; })) rows.push(row);
+        row = []; value = "";
+      } else value += ch;
+    }
+    row.push(value);
+    if (row.some(function (v) { return v !== ""; })) rows.push(row);
+    return rows;
+  }
+
+  function importAllDataCsv(text) {
+    var rows = parseBackupCsv(text), incomeHeader = -1, expenseHeader = -1;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i][0] === "Month" && rows[i][1] === "Income (INR)") incomeHeader = i;
+      if (rows[i][0] === "Month" && rows[i][1] === "Date" &&
+          rows[i][2] === "Category" && rows[i][3] === "Amount (INR)") expenseHeader = i;
+    }
+    if (incomeHeader < 0 || expenseHeader < 0 || expenseHeader <= incomeHeader) {
+      throw new Error("Unsupported CSV. Import a full-history backup exported by this app.");
+    }
+
+    var imported = {};
+    for (var a = incomeHeader + 1; a < expenseHeader; a++) {
+      var ir = rows[a], month = ir[0] || "";
+      if (!/^\d{4}-\d{2}$/.test(month)) continue;
+      imported[month] = { income: Math.max(0, Number(ir[1]) || 0), expenses: [] };
+    }
+    for (var b = expenseHeader + 1; b < rows.length; b++) {
+      var er = rows[b], key = er[0] || "";
+      if (!/^\d{4}-\d{2}$/.test(key)) continue;
+      var date = er[1] || "", category = er[2] || "Other", amount = Number(er[3]);
+      if (!imported[key]) imported[key] = { income: 0, expenses: [] };
+      if (!Number.isFinite(amount) || amount < 0) continue;
+      if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) date = "";
+      if (date && date.slice(0, 7) !== key) continue;
+      imported[key].expenses.push({ date: date, cat: category, amt: amount });
+    }
+
+    var keys = Object.keys(imported);
+    if (!keys.length) throw new Error("No valid monthly records found in this backup.");
+    if (!confirm("Import " + keys.length + " month(s)? Existing records for these months will be replaced. Export a backup of current data first.")) return;
+
+    keys.forEach(function (key) { state[key] = imported[key]; });
+    if (!save()) {
+      alert("Import could not be saved to browser storage. Keep the CSV file as your backup.");
+      return;
+    }
+    $("month").value = keys.sort().slice(-1)[0];
+    $("date").value = defaultDate();
+    render();
+    alert("Backup restored successfully.");
+  }
+
+  function exportAllDataCsv() {
+    download("money-checkup-all-data-" + localDay() + ".csv", buildAllDataCsv());
+  }
+
+  var backupPicker = document.createElement("input");
+  backupPicker.type = "file";
+  backupPicker.accept = ".csv,text/csv";
+  backupPicker.hidden = true;
+  backupPicker.addEventListener("change", function () {
+    var file = backupPicker.files && backupPicker.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      try { importAllDataCsv(reader.result); }
+      catch (e) { console.error(e); alert(e.message || "Could not import this backup CSV."); }
+      finally { backupPicker.value = ""; }
+    };
+    reader.onerror = function () {
+      alert("Could not read the selected backup file.");
+      backupPicker.value = "";
+    };
+    reader.readAsText(file);
   });
-  $("printBtn").addEventListener("click", function () { window.print(); });
+  document.body.appendChild(backupPicker);
+
+  document.addEventListener("keydown", function (event) {
+    if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey) return;
+    var key = String(event.key || "").toLowerCase();
+    if (key === "e") {
+      event.preventDefault();
+      exportAllDataCsv();
+    } else if (key === "i") {
+      event.preventDefault();
+      backupPicker.click();
+    }
+  });
+
+  // Persist on page hide as a final safeguard; main form handlers save immediately.
+  window.addEventListener("pagehide", function () { save(); });
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") save();
+  });
 
   function countDays(list) {
     var seen = {};
@@ -659,6 +780,9 @@
     if (!confirm("Clear all data for " + monthKey() + "?")) return;
     state[monthKey()] = { income: 0, expenses: [] };
     save(); render();
+  });
+  $("downloadCsvBtn").addEventListener("click", function () {
+    exportAllDataCsv();
   });
   // ---- init ----
   (function init() {
